@@ -117,7 +117,7 @@ Notes:
 ### 2. Still on the Proxmox host: install from GitHub
 
 ```bash
-pct exec "$VMID" -- bash -c 'apt-get update -qq && apt-get install -y -qq curl >/dev/null && \
+pct exec "$VMID" -- env LC_ALL=C.UTF-8 bash -c 'apt-get update -qq && apt-get install -y -qq curl >/dev/null && \
   curl -fsSL https://raw.githubusercontent.com/Wm-Mason-Cyber/we-do-talk-about-bruno/main/deploy/install.sh | bash'
 ```
 

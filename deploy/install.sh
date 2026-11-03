@@ -19,6 +19,10 @@ SRC="$APP/src"
 ENV_FILE=/etc/bruno-api.env
 LOG_DIR=/var/log/bruno-api
 
+# `pct exec` passes the host's LANG (e.g. en_US.UTF-8), which a fresh container
+# hasn't generated; C.UTF-8 always exists and keeps apt/perl from complaining
+export LANG=C.UTF-8 LC_ALL=C.UTF-8
+
 # ── Stage 1: get the code, then hand off to the installer inside it ──────────
 fetch() {
     [[ $EUID -eq 0 ]] || { echo "Run as root."; exit 1; }
