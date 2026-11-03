@@ -49,38 +49,79 @@ Inside the container:
 
 ---
 
-## Setting up the LXC
+## Setting up the LXC (from scratch)
 
-### 0. Decide one thing first: can student laptops reach the container?
+Everything below runs in **one shell on a Proxmox node** (web UI → node → **>_ Shell**,
+or `ssh root@<node>`). Keep that shell open from start to finish, because each step
+uses the variables set in step 1. If you lose the shell, paste step 1 again.
 
-This is the only part that can really go wrong. The container has to be on a network
-the classroom laptops can reach.
+### Before you start: two decisions
+
+**1. Which network?** The container has to be on a network the classroom laptops can reach.
 
 - **Best:** the same VLAN/subnet as the classroom laptops. Then `bruno-api.local`
   resolves through mDNS with no setup.
 - **OK:** a different subnet that's routed to the classroom. mDNS will **not** cross
-  subnets, so students use the IP address (`http://10.x.x.x:5000`), or IT adds a DNS
-  record. Give the container a **DHCP reservation or a static IP** so the address
-  doesn't change.
+  subnets, so students use the IP address, or IT adds a DNS record.
 - **Won't work:** a management/server VLAN that classroom devices can't route to.
 
-If you're not sure, try it first: from a student laptop, `ping` some other machine on
-the Proxmox bridge/VLAN you plan to use.
+**2. Which IP address?** Pick one **static address that nothing else uses**, ideally
+outside the router's DHCP range, so the router can never hand it to another device.
+Don't rely on DHCP: if the router gives the container an address another server is
+already using, students' requests land on that server instead (this has happened
+here once already, with a GitLab VM). Step 2 checks that your pick is free before
+anything gets created.
 
-### 1. On the Proxmox host: create the container
+### Starting over? Remove the old container first
 
-Open a shell on any node (web UI → node → **>_ Shell**, or `ssh root@<node>`).
-Adjust the variables at the top, then paste the whole block.
+```bash
+OLD=120                          # the old container's ID
+pct stop $OLD; pct destroy $OLD --purge
+```
+
+`--purge` also removes it from HA and backup jobs. Skip this on a first install.
+
+### 1. Set your values
 
 ```bash
 # ── adjust these ──────────────────────────────────────────────
-VMID=120                 # any free ID:  pvesh get /cluster/nextid
-STORAGE=local-lvm        # where the root disk lives (local-lvm, ceph pool, etc.)
+VMID=120                 # an unused ID — `pvesh get /cluster/nextid` suggests one
+ADDR=10.24.81.N          # the static IP you picked (must be unused!)
+CIDR=24                  # subnet size: 24 = 255.255.255.0
+GW=10.24.81.1            # your router/gateway
 BRIDGE=vmbr0             # the bridge that reaches the classroom network
 VLAN=                    # e.g. 112 if the classroom is a tagged VLAN; blank if not
+STORAGE=local-lvm        # where the root disk lives (local-lvm, ceph pool, etc.)
 HOSTNAME=bruno-api       # becomes  http://bruno-api.local
 # ──────────────────────────────────────────────────────────────
+```
 
+### 2. Check that the ID and IP are free
+
+```bash
+if [ -n "$(ls /etc/pve/nodes/*/{lxc,qemu-server}/$VMID.conf 2>/dev/null)" ]; then
+  echo "❌ ID $VMID is already used — pick another"
+else
+  echo "✅ ID $VMID is free"
+fi
+if ! [[ $ADDR =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+  echo "❌ ADDR=$ADDR isn't a real IP address yet — edit step 1"
+else
+  ping -c2 -W1 "$ADDR" &>/dev/null
+  if ip neigh show "$ADDR" | grep -q lladdr; then
+    echo "❌ $ADDR is already in use by MAC $(ip neigh show "$ADDR" | awk '{print $5}') — pick another"
+  else
+    echo "✅ nothing answers at $ADDR"
+  fi
+fi
+```
+
+Only continue when both lines are ✅. (The IP check works because the Proxmox host is on
+the same network. A device that ignores ping still shows up in `ip neigh`.)
+
+### 3. Create and start the container
+
+```bash
 pveam update
 TEMPLATE=$(pveam available --section system | awk '/debian-12-standard/ {print $2}' | sort -V | tail -1)
 echo "Using template: $TEMPLATE"
@@ -90,18 +131,21 @@ pct create "$VMID" "local:vztmpl/$TEMPLATE" \
   --hostname "$HOSTNAME" \
   --cores 1 --memory 512 --swap 512 \
   --rootfs "$STORAGE:4" \
-  --net0 "name=eth0,bridge=$BRIDGE,ip=dhcp${VLAN:+,tag=$VLAN}" \
+  --net0 "name=eth0,bridge=$BRIDGE,ip=$ADDR/$CIDR,gw=$GW${VLAN:+,tag=$VLAN}" \
+  --nameserver "$GW" \
   --unprivileged 1 --features nesting=1 \
   --onboot 1 \
   --description "Bruno lab: Class Roster API + live dashboard — github.com/Wm-Mason-Cyber/we-do-talk-about-bruno"
 
 pct start "$VMID"
 sleep 5
-pct exec "$VMID" -- ip -4 -brief addr show eth0
+pct exec "$VMID" -- timeout 5 bash -c 'exec 3<>/dev/tcp/github.com/443' \
+  && echo "✅ container can reach GitHub" \
+  || echo "❌ container can't reach the internet — check GW / VLAN / nameserver"
 ```
 
-The last line prints the container's IP. **Write it down.** If you can, set a DHCP
-reservation for it now (`pct config $VMID | grep hwaddr` shows the MAC).
+`--nameserver` assumes your gateway also answers DNS, which most routers do. If yours
+doesn't, use your school's DNS server's IP instead.
 
 Notes:
 
@@ -111,19 +155,23 @@ Notes:
   Recent Debian's systemd needs it.
 - 1 core, 512 MB RAM, and a 4 GB disk is plenty. The app idles at about 60 MB.
 - **Prefer the GUI?** *Create CT* with the same settings: hostname `bruno-api`, Debian 12
-  template, 4 GB disk, 1 core, 512 MB, DHCP on the classroom bridge/VLAN, and tick
-  *Start at boot* under Options afterward.
+  template, 4 GB disk, 1 core, 512 MB, **static** IPv4 `ADDR/CIDR` with your gateway,
+  your DNS server, and *Start at boot* ticked under Options afterward. Then continue
+  with step 4 here.
 
-### 2. Still on the Proxmox host: install from GitHub
+### 4. Install the app from GitHub
 
 ```bash
 pct exec "$VMID" -- env LC_ALL=C.UTF-8 bash -c 'apt-get update -qq && apt-get install -y -qq curl >/dev/null && \
   curl -fsSL https://raw.githubusercontent.com/Wm-Mason-Cyber/we-do-talk-about-bruno/main/deploy/install.sh | bash'
 ```
 
-The installer clones this repo to `/opt/bruno-api/src`, sets everything up, and finishes
-by printing the URLs and your **teacher key**. You need the key for the dashboard's
-*Teacher* button. To see it again later:
+This takes a minute or two. It clones this repo to `/opt/bruno-api/src`, sets
+everything up, and **finishes with a box listing the URLs and your teacher key**. If it
+stops before that box, the last lines say what went wrong. Fix that, then run the same
+command again; it's safe to repeat.
+
+You need the teacher key for the dashboard's *Teacher* button. To see it again later:
 
 ```bash
 pct exec "$VMID" -- cat /etc/bruno-api.env
@@ -132,15 +180,25 @@ pct exec "$VMID" -- cat /etc/bruno-api.env
 The container needs outbound internet to reach GitHub, apt, and PyPI when installing
 or updating. While it's serving the class, it doesn't.
 
-### 3. Check it from a student laptop
+### 5. Verify you're reaching *this* server
 
-1. Browser: `http://bruno-api.local:5000/students` → JSON with Ada and Grace.
-   If the name doesn't resolve, try `http://<IP>:5000/students`. If the IP works but the
-   name doesn't, see Troubleshooting.
-2. Browser on the projector computer: `http://bruno-api.local/dashboard` → the green
-   dot reads **live**.
-3. Bruno on a laptop: `POST /students` with `{"name": "test"}`. It shows up on the
-   dashboard within about a second.
+From the Proxmox shell:
+
+```bash
+curl -s -D - -o /dev/null http://$ADDR:5000/students | grep -i '^x-served-by' && echo "✅ port 5000 OK"
+curl -s -D - -o /dev/null http://$ADDR/dashboard     | grep -i '^x-served-by' && echo "✅ port 80 OK"
+```
+
+Both lines should print `X-Served-By: bruno-api`. If one doesn't, something else on
+the network is answering at that address (see Troubleshooting).
+
+Then from a **student laptop** and the **projector computer**:
+
+1. `http://bruno-api.local:5000/students` shows JSON with Ada and Grace. If the name
+   doesn't resolve, use `http://<ADDR>:5000/students`, and see Troubleshooting.
+2. `http://bruno-api.local/dashboard` on the projector: the green dot reads **live**.
+3. In Bruno, `POST /students` with `{"name": "test"}`. It appears on the dashboard within
+   about a second.
 
 ### Optional: high availability across the cluster
 
@@ -204,7 +262,7 @@ git -C /opt/bruno-api/src log -1 --oneline       # which commit is deployed?
 ```
 
 **Backups:** there's no persistent data, so there's nothing to back up. Rebuilding is
-steps 1–2.
+steps 1–5.
 
 ---
 
