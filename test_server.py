@@ -68,6 +68,15 @@ def test_admin_key(client):
     assert r.status_code == 200
 
 
+
+def test_teapot(client):
+    for method in ("get", "post"):
+        r = getattr(client, method)("/coffee")
+        assert r.status_code == 418
+        assert "teapot" in r.json()["detail"]
+    r = client.get("/tea")
+    assert r.status_code == 200
+
 def test_dashboard_records_changes(client):
     client.post("/students", json={"name": "<img src=x onerror=alert(1)>"})
     client.put("/students/1", json={"name": "Ada L"})

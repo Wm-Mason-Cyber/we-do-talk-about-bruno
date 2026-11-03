@@ -8,6 +8,8 @@ Endpoints:
     PUT    /students/{id}     rename a student   body: {"name": "..."}
     DELETE /students/{id}     remove a student
     GET    /admin-only        secret data, needs header  X-API-Key: bruno-is-awesome
+    GET    /coffee            ask this server to brew coffee (it can't)
+    GET    /tea               ask it for tea instead
     GET    /docs              interactive documentation (FastAPI builds this for free)
 
 Run it yourself:
@@ -158,3 +160,22 @@ async def get_admin_data(x_api_key: str = Header(None)):
 
     # 4. If the key is correct, send the secret data
     return {"message": "You found the secret admin data!"}
+
+
+# --- Easter egg: HTTP 418 "I'm a teapot" ---
+# 418 comes from an April Fools' joke, RFC 2324 (1998): the "Hyper Text Coffee
+# Pot Control Protocol". A teapot asked to brew coffee must answer 418.
+# It was never a real status code, but so many servers adopted it that
+# RFC 9110 now reserves 418 so nobody can reuse it for anything else.
+
+@app.api_route("/coffee", methods=["GET", "POST"])
+async def brew_coffee():
+    raise HTTPException(
+        status_code=418,
+        detail="I'm a teapot. I can't brew coffee, but try /tea",
+    )
+
+
+@app.api_route("/tea", methods=["GET", "POST"])
+async def brew_tea():
+    return {"message": "Here is your tea. 🫖 Teapots are good at this."}

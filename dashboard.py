@@ -354,7 +354,7 @@ PAGE = r"""<!DOCTYPE html>
 const REASONS = {
   200: 'OK', 201: 'Created', 204: 'No Content', 304: 'Not Modified', 307: 'Temporary Redirect',
   400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found',
-  405: 'Method Not Allowed', 422: 'Unprocessable Content', 429: 'Too Many Requests',
+  405: 'Method Not Allowed', 418: "I'm a teapot 🫖", 422: 'Unprocessable Content', 429: 'Too Many Requests',
   500: 'Internal Server Error', 502: 'Bad Gateway', 503: 'Service Unavailable', 507: 'Insufficient Storage',
 };
 const METHODS = ['GET', 'POST', 'PUT', 'DELETE'];

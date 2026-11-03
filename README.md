@@ -175,6 +175,8 @@ bypass a filtering proxy.
 | `PUT` | `/students/{id}` | Rename `{"name": "..."}` | 200, 404, 422 |
 | `DELETE` | `/students/{id}` | Remove | 200, 404 |
 | `GET` | `/admin-only` | Secret data. Needs header `X-API-Key: bruno-is-awesome` | 200, 403 |
+| `GET`/`POST` | `/coffee` | Easter egg: the server is a teapot (RFC 2324) | 418 |
+| `GET`/`POST` | `/tea` | What the teapot *can* do | 200 |
 
 ### What's in the repo
 
