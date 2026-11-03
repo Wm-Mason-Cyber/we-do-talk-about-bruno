@@ -216,6 +216,18 @@ from the laptops (see step 0), or the network blocks multicast. Use the IP in th
 student instructions, or ask IT for a DNS A record. Check that avahi is running with
 `systemctl status avahi-daemon` inside the container.
 
+**The IP opens some *other* server (a login page, another app), or the container "flickers" up and down.**
+Two machines are using the same IP address, and the network keeps switching which one
+gets the traffic. The installer warns about this. Check from the Proxmox host:
+`ip neigh show <IP>` should show the same MAC as `pct config $VMID | grep hwaddr`.
+Give the container an address nobody else uses, outside the DHCP pool (or reserve one
+in DHCP):
+
+```bash
+pct set $VMID --net0 "name=eth0,bridge=vmbr0,ip=10.x.x.N/24,gw=10.x.x.1"   # add ,tag=<vlan> if used
+pct reboot $VMID
+```
+
 **Nothing answers, not even the IP.**
 Inside the container, run `curl localhost:5000/students`.
 - If that works, it's the network path: wrong bridge/VLAN, or the Proxmox firewall on

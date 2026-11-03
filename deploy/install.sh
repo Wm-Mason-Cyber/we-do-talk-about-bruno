@@ -57,7 +57,7 @@ install_app() {
 
     echo "[1/6] Installing packages..."
     apt-get update -qq
-    apt-get install -y -qq python3 python3-venv nginx avahi-daemon curl >/dev/null
+    apt-get install -y -qq python3 python3-venv nginx avahi-daemon curl iputils-arping >/dev/null
 
     # avahi-daemon's process limit trips over unprivileged LXC; drop it so
     # <hostname>.local resolves for student laptops on the same network
@@ -115,7 +115,19 @@ summary() {
     host="$(hostname)"
     key="$(sed -n 's/^TEACHER_KEY=//p' "$ENV_FILE")"
 
+    # Another machine answering ARP for our address means students' requests
+    # can land on it instead of us (seen in the wild: a GitLab VM on the same IP)
+    local dup=0
+    if command -v arping &>/dev/null && ! arping -D -q -c 2 -w 3 -I eth0 "$ip" 2>/dev/null; then
+        dup=1
+    fi
+
     echo ""
+    if [[ "$dup" -eq 1 ]]; then
+        echo "  WARNING: another machine on the network is ALSO using ${ip}."
+        echo "           Give this container its own address before class (see README → Troubleshooting)."
+        echo ""
+    fi
     if [[ "$ok" -eq 1 ]]; then
         echo "  Roster API is up  ($(git -C "$SRC" log -1 --format='%h %s'))"
     else
