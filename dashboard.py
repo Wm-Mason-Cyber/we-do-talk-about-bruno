@@ -8,26 +8,29 @@ status code they got back) within a second.
     /dashboard          projector page
     /dashboard/events   SSE stream the page listens to
     /dashboard/state    JSON snapshot (handy for curl / debugging)
-    /dashboard/reset    POST with header X-Teacher-Key: <TEACHER_KEY> → fresh roster
+    /dashboard/reset    POST with header X-Teacher-Key: <teacher key> → fresh roster
+    /logs/access        every request, in the standard nginx/Apache "combined" format
 
 Hooked into the API by app.py; roster_api.py knows nothing about it.
 """
 
 import asyncio
 import json
-import os
 import secrets
 import time
 from collections import Counter, deque
-from typing import Callable, List
+from datetime import datetime
+from pathlib import Path
+from typing import Callable, List, Optional
 
 from fastapi import APIRouter, FastAPI, Header, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, StreamingResponse
 
 FEED_LENGTH = 150        # recent requests kept for a freshly opened dashboard
 HEARTBEAT_SECS = 15      # keeps the SSE connection alive through nginx
 QUIET_PREFIXES = ("/dashboard", "/favicon.ico", "/openapi.json", "/docs/oauth2-redirect")
+LOG_MAX_BYTES = 5_000_000  # access.log rolls over to access.log.1 past this
 
 
 # ── State shared by the middleware and every open dashboard ───────────────────
@@ -109,40 +112,77 @@ class Hub:
                 self.subscribers.discard(queue)
 
 
+# ── Access log in the standard "combined" format (what AP FRQs show) ─────────
+
+class AccessLog:
+    def __init__(self, path: Path):
+        self.path = path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch(exist_ok=True)
+
+    def write(self, scope: dict, status: int, size: int):
+        headers = dict(scope.get("headers") or [])
+        h = lambda name: headers.get(name, b"-").decode("latin-1").replace('"', "'") or "-"
+        query = scope.get("query_string", b"").decode("latin-1")
+        target = scope.get("path", "") + ("?" + query if query else "")
+        line = '%s - - [%s] "%s %s HTTP/%s" %d %d "%s" "%s"\n' % (
+            (scope.get("client") or ("-", 0))[0],
+            datetime.now().astimezone().strftime("%d/%b/%Y:%H:%M:%S %z"),
+            scope.get("method", "-"), target, scope.get("http_version", "1.1"),
+            status, size, h(b"referer"), h(b"user-agent"),
+        )
+        try:
+            if self.path.stat().st_size > LOG_MAX_BYTES:
+                self.path.replace(self.path.with_name(self.path.name + ".1"))
+        except FileNotFoundError:
+            pass
+        with open(self.path, "a") as f:
+            f.write(line)
+
+
 # ── ASGI middleware: notice every request and the status code it got ─────────
 
 class RequestRecorder:
-    def __init__(self, app, hub: Hub):
+    def __init__(self, app, hub: Hub, log: Optional[AccessLog]):
         self.app = app
         self.hub = hub
+        self.log = log
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or scope["path"].startswith(QUIET_PREFIXES):
+        if scope["type"] != "http":
             return await self.app(scope, receive, send)
-
-        started = False
+        # The dashboard's own traffic stays out of the feed (and the log), or it would flood both
+        quiet = scope["path"].startswith(QUIET_PREFIXES)
+        status, size = 500, 0
 
         async def send_and_record(message):
-            nonlocal started
-            if message["type"] == "http.response.start" and not started:
-                started = True
-                # The route has finished by now, so the roster diff belongs to this request
-                self.hub.record(scope, message["status"])
+            nonlocal status, size
+            if message["type"] == "http.response.start":
+                status = message["status"]
+                if not quiet:
+                    # The route has finished by now, so the roster diff belongs to this request
+                    self.hub.record(scope, status)
+            elif message["type"] == "http.response.body":
+                size += len(message.get("body", b""))
             await send(message)
 
         try:
             await self.app(scope, receive, send_and_record)
         except Exception:
-            if not started:
+            if not quiet:
                 self.hub.record(scope, 500)
             raise
+        finally:
+            if self.log and not quiet:
+                self.log.write(scope, status, size)
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
-def attach(app: FastAPI, get_roster: Callable[[], list], reset_roster: Callable[[], None]):
+def attach(app: FastAPI, get_roster: Callable[[], list], reset_roster: Callable[[], None],
+           teacher_key: str = "", access_log: Optional[Path] = None):
     hub = Hub(get_roster)
-    teacher_key = os.environ.get("TEACHER_KEY", "")
+    log = AccessLog(access_log) if access_log else None
     router = APIRouter(prefix="/dashboard", include_in_schema=False)
 
     @router.get("", response_class=HTMLResponse)
@@ -179,7 +219,7 @@ def attach(app: FastAPI, get_roster: Callable[[], list], reset_roster: Callable[
     @router.post("/reset")
     async def reset(x_teacher_key: str = Header(None)):
         if not teacher_key:
-            raise HTTPException(503, "Reset is disabled: TEACHER_KEY is not set on the server.")
+            raise HTTPException(503, "Reset is disabled: no teacher key is set on the server.")
         if not x_teacher_key or not secrets.compare_digest(x_teacher_key, teacher_key):
             raise HTTPException(403, "Wrong teacher key.")
         reset_roster()
@@ -187,7 +227,13 @@ def attach(app: FastAPI, get_roster: Callable[[], list], reset_roster: Callable[
         return {"message": "Roster reset."}
 
     app.include_router(router)
-    app.add_middleware(RequestRecorder, hub=hub)
+
+    if log:
+        @app.get("/logs/access", include_in_schema=False)
+        async def access_log_text():
+            return PlainTextResponse(log.path.read_text(), headers={"Cache-Control": "no-store"})
+
+    app.add_middleware(RequestRecorder, hub=hub, log=log)
     return hub
 
 

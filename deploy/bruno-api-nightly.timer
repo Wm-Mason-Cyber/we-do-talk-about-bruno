@@ -1,9 +1,0 @@
-[Unit]
-Description=Restart the Roster API every morning so each day starts with a clean roster
-
-[Timer]
-OnCalendar=*-*-* 05:00
-Persistent=true
-
-[Install]
-WantedBy=timers.target

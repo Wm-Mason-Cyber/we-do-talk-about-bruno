@@ -5,10 +5,13 @@ Smoke tests for the Roster API + dashboard.
     python3 -m pytest test_server.py -v
 """
 
-import json
 import os
+import tempfile
 
 os.environ["TEACHER_KEY"] = "test-teacher-key"
+os.environ["ACCESS_LOG"] = os.path.join(tempfile.mkdtemp(), "access.log")
+
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -96,3 +99,15 @@ def test_reset_needs_teacher_key(client):
     assert [s["id"] for s in state["roster"]] == [1, 2]
     assert state["events"] == []
     assert client.post("/students", json={"name": "Next"}).json()["id"] == 3
+
+
+def test_access_log_combined_format(client):
+    client.post("/students", json={"name": "Logged"}, headers={"User-Agent": "bruno-runtime/2.13.2"})
+    client.get("/dashboard/state")   # dashboard traffic stays out of the log
+    text = client.get("/logs/access").text
+    lines = [l for l in text.splitlines() if l]
+    post = [l for l in lines if '"POST /students' in l][-1]
+    assert re.match(
+        r'^\S+ - - \[\d{2}/\w{3}/\d{4}:\d{2}:\d{2}:\d{2} [+-]\d{4}\] '
+        r'"POST /students HTTP/1.1" 201 \d+ "-" "bruno-runtime/2.13.2"$', post), post
+    assert not any("/dashboard" in l for l in lines)
