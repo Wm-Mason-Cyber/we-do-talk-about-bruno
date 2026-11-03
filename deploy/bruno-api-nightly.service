@@ -1,0 +1,6 @@
+[Unit]
+Description=Fresh roster for the new school day (restart the Roster API)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart bruno-api.service

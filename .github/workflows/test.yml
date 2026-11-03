@@ -1,0 +1,22 @@
+name: test
+
+# The LXC deploys straight from main, so keep main green
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # 3.11 = Debian 12 container, 3.13 = Debian 13
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -r requirements.txt pytest httpx
+      - run: python -m pytest test_server.py -v
+      - run: bash -n deploy/install.sh
